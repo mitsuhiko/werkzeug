@@ -755,6 +755,13 @@ def is_running_from_reloader() -> bool:
     return os.environ.get("WERKZEUG_RUN_MAIN") == "true"
 
 
+def create_startup_message(message, message_type="info", bullet_point=True, indent=0):
+    return (
+        message_type,
+        "\t".join(range(indent)) + "*" if bullet_point else "" + message,
+    )
+
+
 def run_simple(
     hostname,
     port,
@@ -772,6 +779,7 @@ def run_simple(
     static_files=None,
     passthrough_errors=False,
     ssl_context=None,
+    startup_messages=(),
 ):
     """Start a WSGI application. Optional features include a reloader,
     multithreading and fork support.
@@ -847,6 +855,10 @@ def run_simple(
                         ``(cert_file, pkey_file)``, the string ``'adhoc'`` if
                         the server should automatically create one, or ``None``
                         to disable SSL (which is the default).
+    :param startup_messages: a list where each item is a tuple or a function
+                             returning a tuple where the first element is the
+                             message type and the second element is the message
+                             body.
     """
     if not isinstance(port, int):
         raise TypeError("port must be an integer")
@@ -876,6 +888,10 @@ def run_simple(
                 port,
                 quit_msg,
             )
+        for startup_message in startup_messages:
+            if callable(startup_message):
+                startup_message = startup_message()
+            _log(*startup_message)
 
     def inner():
         try:
