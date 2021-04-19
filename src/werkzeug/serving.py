@@ -253,9 +253,10 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
         headers_set: t.Optional[t.List[t.Tuple[str, str]]] = None
         status_sent: t.Optional[str] = None
         headers_sent: t.Optional[t.List[t.Tuple[str, str]]] = None
+        chunk_response: bool = False
 
         def write(data: bytes) -> None:
-            nonlocal status_sent, headers_sent
+            nonlocal status_sent, headers_sent, chunk_response
             assert status_set is not None, "write() before start_response"
             assert headers_set is not None, "write() before start_response"
             if status_sent is None:
@@ -270,16 +271,19 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
                 header_keys = set()
                 for key, value in headers_sent:
                     self.send_header(key, value)
-                    key = key.lower()
-                    header_keys.add(key)
+                    header_keys.add(key.lower())
                 if not (
                     "content-length" in header_keys
                     or environ["REQUEST_METHOD"] == "HEAD"
                     or code < 200
                     or code in (204, 304)
                 ):
-                    self.close_connection = True
-                    self.send_header("Connection", "close")
+                    if self.protocol_version >= "HTTP/1.1":
+                        chunk_response = True
+                        self.send_header("Transfer-Encoding", "chunked")
+                    else:
+                        self.close_connection = True
+                        self.send_header("Connection", "close")
                 if "server" not in header_keys:
                     self.send_header("Server", self.version_string())
                 if "date" not in header_keys:
@@ -287,7 +291,14 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
 
             assert isinstance(data, bytes), "applications must write bytes"
-            self.wfile.write(data)
+
+            if len(data):
+                if chunk_response:
+                    self.wfile.write(hex(len(data))[2:].encode())
+                    self.wfile.write(b"\r\n")
+                self.wfile.write(data)
+                if chunk_response:
+                    self.wfile.write(b"\r\n")
             self.wfile.flush()
 
         def start_response(status, headers, exc_info=None):
@@ -306,11 +317,14 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
 
         def execute(app: "WSGIApplication") -> None:
             application_iter = app(environ, start_response)
+            nonlocal chunk_response
             try:
                 for data in application_iter:
                     write(data)
                 if not headers_sent:
                     write(b"")
+                if chunk_response:
+                    self.wfile.write(b"0\r\n\r\n")
             finally:
                 if hasattr(application_iter, "close"):
                     application_iter.close()  # type: ignore
@@ -320,7 +334,7 @@ class WSGIRequestHandler(BaseHTTPRequestHandler):
         except (ConnectionError, socket.timeout) as e:
             self.connection_dropped(e, environ)
         except Exception:
-            if self.server.passthrough_errors:
+            if self.server.passthrough_errors or (status_sent and chunk_response):
                 raise
             from .debug.tbtools import get_current_traceback
 
