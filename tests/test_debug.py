@@ -252,36 +252,6 @@ class TestTraceback:
         traceback.log(buffer_)
         assert buffer_.getvalue().strip() == traceback.plaintext.strip()
 
-    def test_sourcelines_encoding(self):
-        source = (
-            "# -*- coding: latin1 -*-\n\n"
-            "def foo():\n"
-            '    """höhö"""\n'
-            "    1 / 0\n"
-            "foo()"
-        ).encode("latin1")
-        code = compile(source, filename="lol.py", mode="exec")
-        try:
-            eval(code)
-        except ZeroDivisionError:
-            traceback = Traceback(*sys.exc_info())
-
-        frames = traceback.frames
-        assert len(frames) == 3
-        assert frames[1].filename == "lol.py"
-        assert frames[2].filename == "lol.py"
-
-        class Loader:
-            def get_source(self, module):
-                return source
-
-        frames[1].loader = frames[2].loader = Loader()
-        assert frames[1].sourcelines == frames[2].sourcelines
-        assert [line.code for line in frames[1].get_annotated_lines()] == [
-            line.code for line in frames[2].get_annotated_lines()
-        ]
-        assert "höhö" in frames[1].sourcelines[3]
-
     def test_filename_encoding(self, tmpdir, monkeypatch):
         moduledir = tmpdir.mkdir("föö")
         moduledir.join("bar.py").write("def foo():\n    1/0\n")

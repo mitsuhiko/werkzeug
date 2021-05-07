@@ -1,24 +1,17 @@
-import codecs
 import inspect
-import os
+import linecache
 import re
 import sys
 import sysconfig
 import traceback
 import typing as t
 from html import escape
-from tokenize import TokenError
 from types import CodeType
 from types import TracebackType
 
 from .._internal import _to_str
-from ..filesystem import get_filesystem_encoding
 from ..utils import cached_property
 from .console import Console
-
-_coding_re = re.compile(br"coding[:=]\s*([-\w.]+)")
-_line_re = re.compile(br"^(.*?)$", re.MULTILINE)
-_funcdef_re = re.compile(r"^(\s*def\s)|(.*(?<!\w)lambda(:|\s))|^(\s*@)")
 
 HEADER = """\
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
@@ -45,6 +38,7 @@ HEADER = """\
   <body style="background-color: #fff">
     <div class="debugger">
 """
+
 FOOTER = """\
       <div class="footer">
         Brought to you by <strong class="arthur">DON'T PANIC</strong>, your
@@ -211,7 +205,7 @@ class Line:
         }
 
 
-class Traceback:
+class Traceback(traceback.TracebackException):
     """Wraps a traceback."""
 
     def __init__(
@@ -220,6 +214,7 @@ class Traceback:
         exc_value: BaseException,
         tb: TracebackType,
     ) -> None:
+        super().__init__(exc_type, exc_value, tb)
         self.exc_type = exc_type
         self.exc_value = exc_value
         self.tb = tb
@@ -320,7 +315,7 @@ class Traceback:
 
     @cached_property
     def plaintext(self) -> str:
-        return "\n".join([group.render_text() for group in self.groups])
+        return "".join(self.format())
 
     @property
     def id(self) -> int:
@@ -353,7 +348,15 @@ class Group:
 
         self.frames = []
         while tb is not None:
-            self.frames.append(Frame(exc_type, exc_value, tb))
+            self.frames.append(
+                Frame(
+                    _to_str(inspect.getsourcefile(tb) or inspect.getfile(tb)),
+                    tb.tb_lineno,
+                    tb.tb_frame.f_code.co_name,
+                    globals=tb.tb_frame.f_globals,
+                    locals=tb.tb_frame.f_locals,
+                )
+            )
             tb = tb.tb_next  # type: ignore
 
     def filter_hidden_frames(self) -> None:
@@ -404,43 +407,21 @@ class Group:
             out.append(f"<li{title}>{frame.render(mark_lib=mark_lib)}")
         return "\n".join(out)
 
-    def render_text(self) -> str:
-        out = []
-        if self.info is not None:
-            out.append(f"\n{self.info}:\n")
-        out.append("Traceback (most recent call last):")
-        for frame in self.frames:
-            out.append(frame.render_text())
-        out.append(self.exception)
-        return "\n".join(out)
 
-
-class Frame:
-    """A single frame in a traceback."""
-
+class Frame(traceback.FrameSummary):
     def __init__(
         self,
-        exc_type: t.Type[BaseException],
-        exc_value: BaseException,
-        tb: TracebackType,
+        filename: str,
+        lineno: int,
+        name: str,
+        locals: t.Dict[str, t.Any],
+        globals: t.Dict[str, t.Any],
+        **kwargs: t.Any,
     ) -> None:
-        self.lineno = tb.tb_lineno
-        self.function_name = tb.tb_frame.f_code.co_name
-        self.locals = tb.tb_frame.f_locals
-        self.globals = tb.tb_frame.f_globals
-
-        fn = inspect.getsourcefile(tb) or inspect.getfile(tb)
-        if fn[-4:] in (".pyo", ".pyc"):
-            fn = fn[:-1]
-        # if it's a file on the file system resolve the real filename.
-        if os.path.isfile(fn):
-            fn = os.path.realpath(fn)
-        self.filename = _to_str(fn, get_filesystem_encoding())
+        super().__init__(filename, lineno, name, lookup_line=False, **kwargs)
+        self.globals = globals
+        self.locals = locals
         self.module = self.globals.get("__name__", self.locals.get("__name__"))
-        self.loader = self.globals.get("__loader__", self.locals.get("__loader__"))
-        self.code = tb.tb_frame.f_code
-
-        # support for paste's traceback extensions
         self.hide = self.locals.get("__traceback_hide__", False)
         info = self.locals.get("__traceback_info__")
         if info is not None:
@@ -453,22 +434,16 @@ class Frame:
             "id": self.id,
             "filename": escape(self.filename),
             "lineno": self.lineno,
-            "function_name": escape(self.function_name),
+            "function_name": escape(self.name),
             "lines": self.render_line_context(),
             "library": "library" if mark_lib and self.is_library else "",
         }
 
     @cached_property
-    def is_library(self) -> bool:
+    def is_library(self):
         return any(
             self.filename.startswith(os.path.realpath(path))
             for path in sysconfig.get_paths().values()
-        )
-
-    def render_text(self) -> str:
-        return (
-            f'  File "{self.filename}", line {self.lineno}, in {self.function_name}\n'
-            f"    {self.current_line.strip()}"
         )
 
     def render_line_context(self) -> str:
@@ -492,99 +467,28 @@ class Frame:
 
         return "\n".join(rv)
 
-    def get_annotated_lines(self) -> t.List[Line]:
-        """Helper function that returns lines with extra information."""
-        lines = [Line(idx + 1, x) for idx, x in enumerate(self.sourcelines)]
+    def get_context_lines(
+        self, context: int = 5
+    ) -> t.Tuple[t.List[str], str, t.List[str]]:
+        lines = linecache.getlines(self.filename)
+        line_idx = self.lineno - 1
+        start_idx = max(0, line_idx - context)
+        stop_idx = min(len(lines), line_idx + context + 1)
+        before = lines[start_idx:line_idx]
+        after = lines[line_idx + 1 : stop_idx]
+        return before, lines[line_idx], after
 
-        # find function definition and mark lines
-        if hasattr(self.code, "co_firstlineno"):
-            lineno = self.code.co_firstlineno - 1
-            while lineno > 0:
-                if _funcdef_re.match(lines[lineno].code):
-                    break
-                lineno -= 1
-            try:
-                offset = len(inspect.getblock([f"{x.code}\n" for x in lines[lineno:]]))
-            except TokenError:
-                offset = 0
-            for line in lines[lineno : lineno + offset]:
-                line.in_frame = True
-
-        # mark current line
-        try:
-            lines[self.lineno - 1].current = True
-        except IndexError:
-            pass
-
-        return lines
+    def render_text(self):
+        return (
+            f'  File "{self.filename}", line {self.lineno}, in {self.name}\n'
+            f"    {self.line}"
+        )
 
     def eval(self, code: t.Union[str, CodeType], mode: str = "single") -> t.Any:
         """Evaluate code in the context of the frame."""
         if isinstance(code, str):
             code = compile(code, "<interactive>", mode)
         return eval(code, self.globals, self.locals)
-
-    @cached_property
-    def sourcelines(self) -> t.List[str]:
-        """The sourcecode of the file as list of strings."""
-        # get sourcecode from loader or file
-        source = None
-        if self.loader is not None:
-            try:
-                if hasattr(self.loader, "get_source"):
-                    source = self.loader.get_source(self.module)
-                elif hasattr(self.loader, "get_source_by_code"):
-                    source = self.loader.get_source_by_code(self.code)
-            except Exception:
-                # we munch the exception so that we don't cause troubles
-                # if the loader is broken.
-                pass
-
-        if source is None:
-            try:
-                with open(self.filename, mode="rb") as f:
-                    source = f.read()
-            except OSError:
-                return []
-
-        # already str?  return right away
-        if isinstance(source, str):
-            return source.splitlines()
-
-        charset = "utf-8"
-        if source.startswith(codecs.BOM_UTF8):
-            source = source[3:]
-        else:
-            for idx, match in enumerate(_line_re.finditer(source)):
-                coding_match = _coding_re.search(match.group())
-                if coding_match is not None:
-                    charset = coding_match.group(1).decode("utf-8")
-                    break
-                if idx > 1:
-                    break
-
-        # on broken cookies we fall back to utf-8 too
-        charset = _to_str(charset)
-        try:
-            codecs.lookup(charset)
-        except LookupError:
-            charset = "utf-8"
-
-        return source.decode(charset, "replace").splitlines()
-
-    def get_context_lines(
-        self, context: int = 5
-    ) -> t.Tuple[t.List[str], str, t.List[str]]:
-        before = self.sourcelines[self.lineno - context - 1 : self.lineno - 1]
-        past = self.sourcelines[self.lineno : self.lineno + context]
-        return (before, self.current_line, past)
-
-    @property
-    def current_line(self) -> str:
-        try:
-            return self.sourcelines[self.lineno - 1]
-        except IndexError:
-            return ""
 
     @cached_property
     def console(self) -> Console:
