@@ -189,6 +189,8 @@ Unreleased
     request with ``shallow=True`` instead. :pr:`2085`
 -   ``HTTPException.wrap`` is deprecated. Create a subclass manually
     instead. :pr:`2085`
+-   Use ``Transfer-Encoding: chunked`` when response protocol is HTTP/1.1
+    :issue:`2090` :issue:`1327` :pr:`2091`
 
 Version 1.0.2
 -------------
