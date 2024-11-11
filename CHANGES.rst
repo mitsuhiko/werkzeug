@@ -5,6 +5,8 @@ Version 3.2.0
 
 Unreleased
 
+- The ``RequestRedirect`` exception now exposes ``new_path`` that
+  contains the request path used to compute the ``new_url``.
 
 Version 3.1.3
 -------------

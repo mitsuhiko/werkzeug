@@ -34,9 +34,10 @@ class RequestRedirect(HTTPException, RoutingException):
 
     code = 308
 
-    def __init__(self, new_url: str) -> None:
+    def __init__(self, new_url: str, new_path: t.Optional[str] = None) -> None:
         super().__init__(new_url)
         self.new_url = new_url
+        self.new_path = new_path
 
     def get_response(
         self,

@@ -607,7 +607,8 @@ class MapAdapter:
             # safe = https://url.spec.whatwg.org/#url-path-segment-string
             new_path = quote(e.path_info, safe="!$&'()*+,/:;=@")
             raise RequestRedirect(
-                self.make_redirect_url(new_path, query_args)
+                self.make_redirect_url(new_path, query_args),
+                new_path,
             ) from None
         except RequestAliasRedirect as e:
             raise RequestRedirect(
@@ -617,7 +618,8 @@ class MapAdapter:
                     e.matched_values,
                     method,
                     query_args,
-                )
+                ),
+                path_part,
             ) from None
         except NoMatch as e:
             if e.have_match_for:
@@ -631,9 +633,11 @@ class MapAdapter:
             rule, rv = result
 
             if self.map.redirect_defaults:
-                redirect_url = self.get_default_redirect(rule, method, rv, query_args)
+                (redirect_url, redirect_path) = self.get_default_redirect(
+                    rule, method, rv, query_args
+                )
                 if redirect_url is not None:
-                    raise RequestRedirect(redirect_url)
+                    raise RequestRedirect(redirect_url, redirect_path)
 
             if rule.redirect_to is not None:
                 if isinstance(rule.redirect_to, str):
@@ -655,7 +659,8 @@ class MapAdapter:
                     urljoin(
                         f"{self.url_scheme or 'http'}://{netloc}{self.script_name}",
                         redirect_url,
-                    )
+                    ),
+                    redirect_url,
                 )
 
             if return_rule:
@@ -736,8 +741,10 @@ class MapAdapter:
             if r.provides_defaults_for(rule) and r.suitable_for(values, method):
                 values.update(r.defaults)  # type: ignore
                 domain_part, path = r.build(values)  # type: ignore
-                return self.make_redirect_url(path, query_args, domain_part=domain_part)
-        return None
+                return self.make_redirect_url(
+                    path, query_args, domain_part=domain_part
+                ), path
+        return None, None
 
     def encode_query_args(self, query_args: t.Mapping[str, t.Any] | str) -> str:
         if not isinstance(query_args, str):
