@@ -16,6 +16,7 @@ from ..exceptions import BadHost
 from ..exceptions import HTTPException
 from ..exceptions import MethodNotAllowed
 from ..exceptions import NotFound
+from ..sansio.request import Request as SansIORequest
 from ..urls import _urlencode
 from ..wsgi import get_host
 from .converters import DEFAULT_CONVERTERS
@@ -46,8 +47,9 @@ class Map:
     arguments besides the `rules` as keyword arguments!
 
     :param rules: sequence of url rules for this map.
-    :param default_subdomain: The default subdomain for rules without a
-                              subdomain defined.
+    :param default_subdomain: The default subdomain used by
+        :meth:`bind_to_environ` and :meth:`bind` if the current subdomain can't
+        be determined.
     :param strict_slashes: If a rule ends with a slash but the matched
         URL does not, redirect to the URL with a trailing slash.
     :param merge_slashes: Merge consecutive slashes when matching or
@@ -62,10 +64,16 @@ class Map:
     :param sort_parameters: If set to `True` the url parameters are sorted.
                             See `url_encode` for more details.
     :param sort_key: The sort key function for `url_encode`.
-    :param host_matching: if set to `True` it enables the host matching
-                          feature and disables the subdomain one.  If
-                          enabled the `host` parameter to rules is used
-                          instead of the `subdomain` one.
+    :param host_matching: Whether to route based on the full ``Host`` rather
+        than subdomains of ``server_name``. Uses the ``host`` parameter for
+        each :class:`Rule`.
+    :param subdomain_matching: Whether to detect the subdomain from ``Host`` and
+        ``server_name``, and route based on it. Uses the ``subdomain`` parameter
+        of each :class:`Rule`. Enabled by default, but always disabled if
+        ``host_matching`` is enabled.
+
+    .. versionchanged:: 3.1
+        The ``subdomain_matching`` parameter was added.
 
     .. versionchanged:: 3.0
         The ``charset`` and ``encoding_errors`` parameters were removed.
@@ -102,6 +110,8 @@ class Map:
         sort_parameters: bool = False,
         sort_key: t.Callable[[t.Any], t.Any] | None = None,
         host_matching: bool = False,
+        *,
+        subdomain_matching: bool = True,
     ) -> None:
         self._matcher = StateMachineMatcher(merge_slashes)
         self._rules_by_endpoint: dict[t.Any, list[Rule]] = {}
@@ -111,6 +121,7 @@ class Map:
         self.default_subdomain = default_subdomain
         self.strict_slashes = strict_slashes
         self.redirect_defaults = redirect_defaults
+        self.subdomain_matching = subdomain_matching and not host_matching
         self.host_matching = host_matching
 
         self.converters = self.default_converters.copy()
@@ -255,49 +266,65 @@ class Map:
         server_name: str | None = None,
         subdomain: str | None = None,
     ) -> MapAdapter:
-        """Like :meth:`bind` but you can pass it an WSGI environment and it
-        will fetch the information from that dictionary.  Note that because of
-        limitations in the protocol there is no way to get the current
-        subdomain and real `server_name` from the environment.  If you don't
-        provide it, Werkzeug will use `SERVER_NAME` and `SERVER_PORT` (or
-        `HTTP_HOST` if provided) as used `server_name` with disabled subdomain
-        feature.
+        """Call :meth:`bind` with information from the WSGI environ.
+        ``PATH_INFO`` is used so it doesn't need to be passed to
+        :meth:`~.MapAdapter.match`.
 
-        If `subdomain` is `None` but an environment and a server name is
-        provided it will calculate the current subdomain automatically.
-        Example: `server_name` is ``'example.com'`` and the `SERVER_NAME`
-        in the wsgi `environ` is ``'staging.dev.example.com'`` the calculated
-        subdomain will be ``'staging.dev'``.
+        The WSGI environ does not have information to determine what subdomain
+        was accessed, so ``server_name`` or ``subdomain`` must be passed in for
+        :attr:`subdomain_matching`. For example, if ``Host`` is
+        ``abc.example.test`` and ``server_name`` is ``example.test``,
+        ``subdomain`` is determined to be ``abc``. If the ``server_name`` is not
+        a suffix of the current ``Host``, then :attr:`default_subdomain` or
+        ``"<invalid>"`` is used.
 
-        If the object passed as environ has an environ attribute, the value of
-        this attribute is used instead.  This allows you to pass request
-        objects.  Additionally `PATH_INFO` added as a default of the
-        :class:`MapAdapter` so that you don't have to pass the path info to
-        the match method.
+        :param environ: The WSGI environ for the request. Can also be a
+            ``Request`` with an ``environ`` attribute; in that case, its
+            :attr:`~.Request.host` is accessed to validate its
+            :attr:`~.Request.trusted_hosts`.
+        :param server_name: When subdomain matching is enabled and ``subdomain``
+            is not given, the subdomain is determined by removing this
+            ``host:port`` as a suffix from the request's ``Host``. If the scheme
+            is ``http``, ``https``, ``ws``, or ``wss``, the corresponding port
+            80 or 443 will be removed.
+        :param subdomain: Route using this subdomain rather than determining it
+            using ``server_name``.
+
+        .. versionchanged:: 3.2
+            If ``server_name`` is not a suffix of ``Host``,
+            :attr:`default_subdomain` is used if set, rather than always
+            ``"<invalid>"``.
+
+        .. versionchanged:: 3.2
+            ``subdomain_matching`` can be disabled.
+
+        .. versionchanged:: 3.2
+            ``server_name`` is ignored if ``host_matching`` is enabled.
+
+        .. versionchanged:: 3.2
+            If the ``environ`` argument is a ``Request``, access ``request.host``
+            to validate``request.trusted_hosts``.
 
         .. versionchanged:: 1.0.0
-            If the passed server name specifies port 443, it will match
-            if the incoming scheme is ``https`` without a port.
+            If ``server_name`` specifies port 443, it will match if the scheme
+            is ``https`` and ``Host`` does not specify a port.
 
-        .. versionchanged:: 1.0.0
-            A warning is shown when the passed server name does not
-            match the incoming WSGI server name.
+        .. versionchanged:: 1.0
+            A warning is shown when ``server_name`` is not a suffix of ``Host``.
 
         .. versionchanged:: 0.8
-           This will no longer raise a ValueError when an unexpected server
-           name was passed.
+            ``"<invalid>"`` is used as the subdomain if ``server_name`` is not a
+            suffix of ``Host``, rather than raising ``ValueError``.
 
         .. versionchanged:: 0.5
-            previously this method accepted a bogus `calculate_subdomain`
-            parameter that did not have any effect.  It was removed because
-            of that.
-
-        :param environ: a WSGI environment.
-        :param server_name: an optional server name hint (see above).
-        :param subdomain: optionally the current subdomain (see above).
+            Removed the ``calculate_subdomain`` parameter which was not used.
         """
+        if isinstance(environ, SansIORequest):
+            wsgi_server_name = environ.host.lower()
+        else:
+            wsgi_server_name = get_host(environ).lower()
+
         env = _get_environ(environ)
-        wsgi_server_name = get_host(env).lower()
         scheme = env["wsgi.url_scheme"]
         upgrade = any(
             v.strip() == "upgrade"
@@ -307,7 +334,7 @@ class Map:
         if upgrade and env.get("HTTP_UPGRADE", "").lower() == "websocket":
             scheme = "wss" if scheme == "https" else "ws"
 
-        if server_name is None:
+        if server_name is None or self.host_matching:
             server_name = wsgi_server_name
         else:
             server_name = server_name.lower()
@@ -318,24 +345,24 @@ class Map:
             elif scheme in {"https", "wss"} and server_name.endswith(":443"):
                 server_name = server_name[:-4]
 
-        if subdomain is None and not self.host_matching:
+        if subdomain is None and self.subdomain_matching and not self.host_matching:
             cur_server_name = wsgi_server_name.split(".")
             real_server_name = server_name.split(".")
             offset = -len(real_server_name)
 
             if cur_server_name[offset:] != real_server_name:
-                # This can happen even with valid configs if the server was
-                # accessed directly by IP address under some situations.
-                # Instead of raising an exception like in Werkzeug 0.7 or
-                # earlier we go by an invalid subdomain which will result
-                # in a 404 error on matching.
+                # Host does not have server_name as a suffix. This can happen if
+                # the server was accessed by IP, or other names point to it in
+                # DNS. Use a placeholder subdomain, which can result in a 404 on
+                # matching or be detected in a wildcard endpoint.
                 warnings.warn(
                     f"Current server name {wsgi_server_name!r} doesn't match configured"
                     f" server name {server_name!r}",
                     stacklevel=2,
                 )
-                subdomain = "<invalid>"
+                subdomain = self.default_subdomain or "<invalid>"
             else:
+                # Remove server_name as a suffix from Host to get the subdomain.
                 subdomain = ".".join(filter(None, cur_server_name[:offset]))
 
         def _get_wsgi_string(name: str) -> str | None:
