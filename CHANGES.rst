@@ -5,6 +5,11 @@ Version 3.2.0
 
 Unreleased
 
+-   ``Map`` takes a ``subdomain_matching`` parameter to disable subdomain
+    matching. In ``bind_to_environ``, the ``server_name`` parameter is not used
+    if ``host_matching`` is enabled. If ``default_subdomain`` is set, it is used
+    if a subdomain could not be determined. :issue:`3005`
+
 
 Version 3.1.3
 -------------
