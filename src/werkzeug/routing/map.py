@@ -16,6 +16,7 @@ from ..exceptions import BadHost
 from ..exceptions import HTTPException
 from ..exceptions import MethodNotAllowed
 from ..exceptions import NotFound
+from ..sansio.request import Request as SansIORequest
 from ..urls import _urlencode
 from ..wsgi import get_host
 from .converters import DEFAULT_CONVERTERS
@@ -278,7 +279,9 @@ class Map:
         ``"<invalid>"`` is used.
 
         :param environ: The WSGI environ for the request. Can also be a
-            ``Request`` with an ``environ`` attribute.
+            ``Request`` with an ``environ`` attribute; in that case, its
+            :attr:`~.Request.host` is accessed to validate its
+            :attr:`~.Request.trusted_hosts`.
         :param server_name: When subdomain matching is enabled and ``subdomain``
             is not given, the subdomain is determined by removing this
             ``host:port`` as a suffix from the request's ``Host``. If the scheme
@@ -298,6 +301,10 @@ class Map:
         .. versionchanged:: 3.2
             ``server_name`` is ignored if ``host_matching`` is enabled.
 
+        .. versionchanged:: 3.2
+            If the ``environ`` argument is a ``Request``, access ``request.host``
+            to validate``request.trusted_hosts``.
+
         .. versionchanged:: 1.0.0
             If ``server_name`` specifies port 443, it will match if the scheme
             is ``https`` and ``Host`` does not specify a port.
@@ -312,8 +319,12 @@ class Map:
         .. versionchanged:: 0.5
             Removed the ``calculate_subdomain`` parameter which was not used.
         """
+        if isinstance(environ, SansIORequest):
+            wsgi_server_name = environ.host.lower()
+        else:
+            wsgi_server_name = get_host(environ).lower()
+
         env = _get_environ(environ)
-        wsgi_server_name = get_host(env).lower()
         scheme = env["wsgi.url_scheme"]
         upgrade = any(
             v.strip() == "upgrade"

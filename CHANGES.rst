@@ -9,6 +9,9 @@ Unreleased
     matching. In ``bind_to_environ``, the ``server_name`` parameter is not used
     if ``host_matching`` is enabled. If ``default_subdomain`` is set, it is used
     if a subdomain could not be determined. :issue:`3005`
+-   If a request object is passed to ``Map.bind_to_environ``, the host is
+    validated against ``request.trusted_hosts``. An invalid host will raise a
+    400 error. :issue:`3007`
 
 
 Version 3.1.3
