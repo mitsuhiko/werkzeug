@@ -499,7 +499,7 @@ class Request(_SansIORequest):
 
     @property
     def script_root(self) -> str:
-        """Alias for :attr:`self.root_path`. ``environ["SCRIPT_ROOT"]``
+        """Alias for :attr:`self.root_path`. ``environ["SCRIPT_NAME"]``
         without a trailing slash.
         """
         return self.root_path
