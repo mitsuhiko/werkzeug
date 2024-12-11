@@ -237,8 +237,8 @@ class DebugTraceback:
     def all_tracebacks(
         self,
     ) -> list[tuple[str | None, traceback.TracebackException]]:
-        out = []
-        current = self._te
+        out: list[tuple[str | None, traceback.TracebackException]] = []
+        current: traceback.TracebackException | None = self._te
 
         while current is not None:
             if current.__cause__ is not None:
