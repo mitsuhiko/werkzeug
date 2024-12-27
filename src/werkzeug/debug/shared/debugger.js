@@ -216,7 +216,7 @@ function createConsole() {
 function createConsoleOutput() {
   const output = document.createElement("div");
   output.classList.add("output");
-  output.innerHTML = "[console ready]";
+  output.textContent = "[console ready]";
   return output;
 }
 
