@@ -623,6 +623,7 @@ class Rule(RuleFactory):
                 self._trace.append((False, data["static"]))
                 content += data["static"] if static else re.escape(data["static"])
 
+            haspath = False
             if data["variable"] is not None:
                 if static:
                     # Switching content to represent regex, hence the need to escape
@@ -640,6 +641,7 @@ class Rule(RuleFactory):
                 convertor_number += 1
                 argument_weights.append(convobj.weight)
                 self._trace.append((True, data["variable"]))
+                haspath = data["converter"] == "path"
 
             if data["slash"] is not None:
                 self._trace.append((False, "/"))
@@ -651,7 +653,7 @@ class Rule(RuleFactory):
                     weight = Weighting(
                         -len(static_weights),
                         static_weights,
-                        -len(argument_weights),
+                        float("+inf") if haspath else len(argument_weights),
                         argument_weights,
                     )
                     yield RulePart(
@@ -681,7 +683,7 @@ class Rule(RuleFactory):
         weight = Weighting(
             -len(static_weights),
             static_weights,
-            -len(argument_weights),
+            float("+inf") if haspath else len(argument_weights),
             argument_weights,
         )
         yield RulePart(

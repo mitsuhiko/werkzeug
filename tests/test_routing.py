@@ -381,7 +381,8 @@ def test_greedy():
         [
             r.Rule("/foo", endpoint="foo"),
             r.Rule("/<path:bar>", endpoint="bar"),
-            r.Rule("/<path:bar>/<path:blub>", endpoint="bar"),
+            r.Rule("/<path:bar>/<blub>", endpoint="bar"),
+            r.Rule("/<baz>/static", endpoint="oops"),
         ]
     )
     adapter = map.bind("example.org", "/")
@@ -389,10 +390,52 @@ def test_greedy():
     assert adapter.match("/foo") == ("foo", {})
     assert adapter.match("/blub") == ("bar", {"bar": "blub"})
     assert adapter.match("/he/he") == ("bar", {"bar": "he", "blub": "he"})
+    assert adapter.match("/he/static") == ("oops", {"baz": "he"})
 
     assert adapter.build("foo", {}) == "/foo"
     assert adapter.build("bar", {"bar": "blub"}) == "/blub"
     assert adapter.build("bar", {"bar": "blub", "blub": "bar"}) == "/blub/bar"
+
+
+def test_greedy_double_paths():
+    # two back to back paths do not have any meaning and should
+    # probably cause an error in _parse_rule
+    map = r.Map(
+        [
+            r.Rule("/foo", endpoint="foo"),
+            r.Rule("/<path:bar>", endpoint="bar"),
+            r.Rule("/<path:bar>/<path:blub>", endpoint="bar"),
+        ]
+    )
+    adapter = map.bind("example.org", "/")
+
+    assert adapter.match("/foo") == ("foo", {})
+    assert adapter.match("/blub") == ("bar", {"bar": "blub"})
+    assert adapter.match("/he/he") == ("bar", {"bar": "he/he"})
+    # can't match ("bar", {"bar": "he", "blub": "he"}) without breaking static matching
+    # use a rule like "/<path:bar/<blub>" instead
+
+    assert adapter.build("foo", {}) == "/foo"
+    assert adapter.build("bar", {"bar": "blub"}) == "/blub"
+    assert adapter.build("bar", {"bar": "blub", "blub": "bar"}) == "/blub/bar"
+
+
+def test_static_priority():
+    # see https://github.com/pallets/werkzeug/issues/2924
+    map = r.Map(
+        [
+            r.Rule("/<path:dyn2>/<dyn1>", endpoint="file"),
+            r.Rule("/<dyn1>/statn", endpoint="stat"),
+        ],
+    )
+
+    adapter = map.bind("example.org", "/")
+
+    assert adapter.match("/d2/d1", method="GET") == (
+        "file",
+        {"dyn2": "d2", "dyn1": "d1"},
+    )
+    assert adapter.match("/d1/statn", method="GET") == ("stat", {"dyn1": "d1"})
 
 
 def test_path():
